@@ -2,7 +2,7 @@
 
 无需 Docker 的企业微信代理管理工具。Nginx 负责接口转发，Python 提供本地管理页面。
 
-当前为 `0.1.0` 本地开发版，尚未替换任何线上容器。
+当前为 `0.1.0` 开发版，提供 Linux 原生安装和本地开发两种运行方式。
 
 ## 适用场景
 
@@ -21,6 +21,86 @@
 - 转发 `/cgi-bin` 下的企业微信接口，包括获取 Token、发送消息、创建菜单和上传素材。
 
 后台账号仅保护管理功能。现有企业微信客户端无需额外填写后台账号密码。
+
+## 一键安装
+
+支持 Debian 12+ / Ubuntu 22.04+，需要系统使用 systemd。使用 root 执行：
+
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/weidaye1122/WxChat-Message/main/install.sh)
+```
+
+也可以使用 curl：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/weidaye1122/WxChat-Message/main/install.sh)
+```
+
+脚本会安装系统 Python、venv、CA 证书和 Nginx，将锁定版本的 Python 依赖放入项目独立环境，并创建 `wxchat-message` 专用账号和 systemd 服务。程序和它启动的 Nginx 均使用该普通账号运行。Nginx 使用本项目的数据目录，不改写已有的 `/etc/nginx/nginx.conf`。
+
+默认端口：
+
+| 服务 | 安装版监听地址 | 用途 |
+| --- | --- | --- |
+| 管理页面 | `127.0.0.1:7081` | 登录、设置和日志查询 |
+| 微信代理 | `0.0.0.0:30888` | 接收客户端的企业微信 API 请求；首次创建管理员后启动 |
+
+如果原版容器已经占用 `30888`，安装器会报告端口冲突，保留现有服务。可以选择其他代理端口试用：
+
+```bash
+WXCHAT_PROXY_PORT=30889 bash <(wget -qO- https://raw.githubusercontent.com/weidaye1122/WxChat-Message/main/install.sh)
+```
+
+首次安装还可以设置 `WXCHAT_ADMIN_PORT` 和 `WXCHAT_PROXY_HOST`。升级时优先保留已经保存的环境文件和代理设置。脚本不会停止、卸载 Docker 或切换现有客户端的代理地址。
+
+### 首次访问
+
+管理页面默认仅监听服务器本机。在自己的电脑建立 SSH 隧道，将 `服务器IP` 替换为目标地址：
+
+```bash
+ssh -N -L 7081:127.0.0.1:7081 root@服务器IP
+```
+
+再在本机浏览器打开 <http://127.0.0.1:7081>，设置管理员账号和密码。自定义 SSH 端口时增加 `-p 端口`；自定义管理端口时同步修改隧道端口。
+
+客户端使用服务器的代理地址，例如 `http://服务器IP:30888`。通过 SSH 隧道访问面板时，客户端地址中的 `127.0.0.1` 要替换为服务器实际地址。需要外部访问时，在服务器的防火墙和安全组中放行所选代理端口。管理端口通过 SSH 隧道访问即可。
+
+### 升级、备份和卸载
+
+再次执行同一条安装命令即可升级。安装器会先创建新的程序目录和 Python 环境，通过校验后再切换版本；服务启动检查失败时恢复之前的版本。账号、会话密钥、代理端口、上传限制和日志位于独立数据目录，不随程序文件替换。
+
+`WXCHAT_VERSION` 可选择已有分支、标签或完整提交 SHA，默认 `main`。安装入口与所选源码版本需包含安装脚本。
+
+查看服务状态和运行日志：
+
+```bash
+sudo systemctl status wxchat-message
+sudo journalctl -u wxchat-message -n 100 --no-pager
+```
+
+备份管理员、会话密钥、代理设置、环境文件和 systemd 配置：
+
+```bash
+sudo /opt/wxchat-message/current/scripts/backup.sh
+```
+
+备份保存在 `/var/backups/wxchat-message/`。该备份不包含请求日志和临时上传文件。
+
+卸载程序并保留账号、环境文件及运行数据：
+
+```bash
+sudo /opt/wxchat-message/current/scripts/uninstall.sh
+```
+
+卸载只移除本项目的程序和 systemd 服务，系统 Python、Nginx、专用账号和备份保留；已有的其他 Nginx 服务继续运行。重新安装时会复用保留的账号和设置。
+
+### 从源码安装
+
+```bash
+git clone https://github.com/weidaye1122/WxChat-Message.git
+cd WxChat-Message
+sudo bash ./install.sh
+```
 
 ## 本地运行
 
@@ -50,7 +130,17 @@ brew install nginx
 
 ## 数据
 
-本地数据默认保存在 `.data/`：
+Linux 安装版目录：
+
+| 路径 | 内容 |
+| --- | --- |
+| `/opt/wxchat-message/current/` | 当前程序和独立 Python 环境 |
+| `/opt/wxchat-message/releases/` | 当前及上一个程序版本 |
+| `/var/lib/wxchat-message/` | 管理员、代理设置和日志 |
+| `/etc/wxchat-message.env` | 管理端口、代理监听地址和运行环境 |
+| `/var/backups/wxchat-message/` | 安装、升级、卸载及手动创建的配置备份 |
+
+本地开发的数据默认保存在 `.data/`，数据内容与安装版相同：
 
 ```text
 auth.json              管理员账号和密码哈希
@@ -73,6 +163,8 @@ proxy/requests.jsonl   代理请求日志
 | `WXCHAT_SECURE_COOKIE` | 经 HTTPS 访问后台时设为 `1` |
 | `WXCHAT_UPSTREAM` | 集成测试用上游，默认 `https://qyapi.weixin.qq.com` |
 
+安装版将 `WXCHAT_DATA` 固定为 `/var/lib/wxchat-message`，默认代理监听地址为 `0.0.0.0`。需要修改安装版管理端口或监听地址时，编辑 `/etc/wxchat-message.env` 后执行 `sudo systemctl restart wxchat-message`；代理端口和上传大小通过管理页面设置。
+
 ## 验证
 
 测试使用临时账号、独立数据目录、临时端口和本地模拟上游，会实际启动 Nginx，不触碰现有代理：
@@ -84,6 +176,14 @@ proxy/requests.jsonl   代理请求日志
 覆盖首次设置、登录退出、访问控制、CSRF、端口切换与冲突、配置恢复、上传大小调整、multipart 报文转发、日志筛选清空和敏感数据脱敏。
 
 当前 14 项集成测试已在 macOS 和 Debian 12 x86_64 临时环境中通过。Linux 测试使用普通用户运行。与原版容器比较的 9 组无效凭证接口请求，HTTP 状态和企业微信错误码一致。
+
+安装脚本的完整测试使用本机 Docker 创建一次性 Debian + systemd 环境，实际执行依赖安装、端口冲突检查、首次设置、升级、失败回滚、备份、卸载和重装，并核对已有 Nginx 保持运行：
+
+```bash
+bash tests/installer/run.sh
+```
+
+该测试需要允许启动 privileged、private cgroup namespace 的本机测试容器。测试容器不映射宿主机端口、不挂载 Docker socket，结束后自动删除。本项目部署运行本身无需 Docker。
 
 模拟上游测试不能代替真实业务验收。正式迁移前仍需用现有客户端验证文字和图片的实际送达。
 

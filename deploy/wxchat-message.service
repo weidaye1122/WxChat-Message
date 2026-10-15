@@ -1,0 +1,28 @@
+[Unit]
+Description=WxChat-Message native proxy manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wxchat-message
+Group=wxchat-message
+WorkingDirectory=/opt/wxchat-message/current
+EnvironmentFile=/etc/wxchat-message.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/wxchat-message/current/.venv/bin/python /opt/wxchat-message/current/app.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/wxchat-message
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

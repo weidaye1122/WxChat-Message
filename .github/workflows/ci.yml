@@ -1,0 +1,22 @@
+name: Linux installation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          bash -n install.sh
+          for script in scripts/*.sh tests/installer/run.sh; do bash -n "$script"; done
+      - name: Test real apt and systemd installation in disposable Debian
+        run: bash tests/installer/run.sh
