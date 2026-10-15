@@ -188,7 +188,7 @@ def create_app(data_directory=None, admin_port=7081, upstream=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="WxChat-Message 本地管理面板")
+    parser = argparse.ArgumentParser(description="WxChat-Message 企业微信代理管理面板")
     parser.add_argument("--port", type=int, default=int(os.environ.get("WXCHAT_ADMIN_PORT", "7081")), help="管理页面端口，默认 7081")
     parser.add_argument("--data", default=os.environ.get("WXCHAT_DATA"), help="独立数据目录")
     args = parser.parse_args()

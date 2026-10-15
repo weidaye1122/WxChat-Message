@@ -11,7 +11,7 @@ SERVICE_USER=wxchat-message
 die() { echo "错误：$*" >&2; exit 1; }
 require_root() { [[ $EUID -eq 0 ]] || die '请使用 root 运行。'; }
 require_system() {
-  [[ "$(uname -s)" == Linux && -f /etc/os-release ]] || die '安装脚本仅支持 Linux；macOS 开发请运行 ./run.sh。'
+  [[ "$(uname -s)" == Linux && -f /etc/os-release ]] || die '一键安装需要 Debian / Ubuntu Linux 系统。'
   # /etc/os-release is maintained by the operating system.
   . /etc/os-release
   [[ "$ID" == debian || "$ID" == ubuntu ]] || die '当前支持 Debian / Ubuntu。'

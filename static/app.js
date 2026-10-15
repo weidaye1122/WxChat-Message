@@ -25,7 +25,7 @@ async function bootstrap() {
     $('#auth-submit').firstChild.textContent = setupRequired ? '创建账号并进入' : '登录工作台';
     errorIn('#auth-error', '');
     if (state.authenticated) { $('#account-name').textContent = state.username; await refresh(); }
-  } catch (error) { $('#loading').textContent = '无法连接管理服务，请检查本地程序是否正在运行。'; }
+  } catch (error) { $('#loading').textContent = '无法连接管理服务，请检查服务是否正在运行。'; }
 }
 $('#auth-form').addEventListener('submit', async event => {
   event.preventDefault(); const button = $('#auth-submit'); button.disabled = true; errorIn('#auth-error', '');

@@ -1,16 +1,12 @@
 # WxChat-Message
 
-无需 Docker 的企业微信代理管理工具。Nginx 负责接口转发，Python 提供本地管理页面。
+WxChat-Message 是一个无需 Docker 的企业微信消息代理工具，提供 Web 管理、代理配置和请求日志查询。
 
-当前为 `0.1.0` 开发版，提供 Linux 原生安装和本地开发两种运行方式。
+Nginx 负责转发企业微信 API 请求，Python 提供管理后台。支持通过一键脚本安装为 Linux 系统服务。
 
-## 适用场景
+当前版本：`0.1.0` · [MIT License](LICENSE)
 
-适合未使用 Docker，或 Docker 仅用于运行微信代理的主机。原生运行可避免单独维护 Docker、containerd 和容器辅助进程。
-
-如果 Docker 已承载其他业务，可以继续使用原版微信代理容器。本项目增加了管理后台，后台自身也会占用内存；是否节省资源，应比较同一台机器上完整运行方案的占用。
-
-## 已实现
+## 功能
 
 - 首次访问设置管理员账号和密码，后续登录管理后台。
 - 自定义代理端口，启停代理；端口占用或校验失败时保留原配置。
@@ -40,18 +36,18 @@ bash <(curl -fsSL https://raw.githubusercontent.com/weidaye1122/WxChat-Message/m
 
 默认端口：
 
-| 服务 | 安装版监听地址 | 用途 |
+| 服务 | 默认监听地址 | 用途 |
 | --- | --- | --- |
 | 管理页面 | `127.0.0.1:7081` | 登录、设置和日志查询 |
 | 微信代理 | `0.0.0.0:30888` | 接收客户端的企业微信 API 请求；首次创建管理员后启动 |
 
-如果原版容器已经占用 `30888`，安装器会报告端口冲突，保留现有服务。可以选择其他代理端口试用：
+如果端口已被占用，安装器会报告冲突。可以在首次安装时指定其他代理端口：
 
 ```bash
 WXCHAT_PROXY_PORT=30889 bash <(wget -qO- https://raw.githubusercontent.com/weidaye1122/WxChat-Message/main/install.sh)
 ```
 
-首次安装还可以设置 `WXCHAT_ADMIN_PORT` 和 `WXCHAT_PROXY_HOST`。升级时优先保留已经保存的环境文件和代理设置。脚本不会停止、卸载 Docker 或切换现有客户端的代理地址。
+首次安装还可以设置 `WXCHAT_ADMIN_PORT` 和 `WXCHAT_PROXY_HOST`。升级时保留已经保存的环境文件和代理设置。
 
 ### 首次访问
 
@@ -102,35 +98,7 @@ cd WxChat-Message
 sudo bash ./install.sh
 ```
 
-## 本地运行
-
-需要 Python 3.10+ 和 Nginx。macOS 可以先安装 Nginx：
-
-```bash
-brew install nginx
-```
-
-在项目目录执行：
-
-```bash
-./run.sh
-```
-
-首次执行会创建 `.venv` 并安装 Python 依赖。打开 <http://127.0.0.1:7081> 设置管理员。
-
-默认代理端口为 `30888`，账号设置完成后自动启动；代理和管理页面默认均只监听本机。代理端口及上传大小可在页面的“代理设置”中修改。
-
-自定义管理端口或使用独立数据目录：
-
-```bash
-./run.sh --port 7082 --data /tmp/wxchat-message-preview
-```
-
-停止管理程序时会同时停止它管理的 Nginx 实例。数据和设置会保留，下次启动自动恢复。程序不读取或改写系统的 `nginx.conf`，也不需要执行 `brew services start nginx`。
-
-## 数据
-
-Linux 安装版目录：
+## 配置与数据
 
 | 路径 | 内容 |
 | --- | --- |
@@ -140,7 +108,7 @@ Linux 安装版目录：
 | `/etc/wxchat-message.env` | 管理端口、代理监听地址和运行环境 |
 | `/var/backups/wxchat-message/` | 安装、升级、卸载及手动创建的配置备份 |
 
-本地开发的数据默认保存在 `.data/`，数据内容与安装版相同：
+`/var/lib/wxchat-message/` 中的主要文件：
 
 ```text
 auth.json              管理员账号和密码哈希
@@ -150,47 +118,28 @@ proxy/nginx.conf       此实例的 Nginx 配置
 proxy/requests.jsonl   代理请求日志
 ```
 
-`.data/` 与 `.venv/` 已排除在 Git 之外。请勿上传管理员数据、会话密钥或生产请求日志。
-
-环境变量：
+服务配置位于 `/etc/wxchat-message.env`：
 
 | 变量 | 用途 |
 | --- | --- |
-| `NGINX_BIN` | 指定 Nginx 可执行文件 |
-| `WXCHAT_DATA` | 指定数据目录 |
 | `WXCHAT_ADMIN_PORT` | 管理页面端口，默认 `7081` |
-| `WXCHAT_PROXY_HOST` | 代理监听地址，默认 `127.0.0.1`，也支持显式设为 `0.0.0.0` |
+| `WXCHAT_PROXY_HOST` | 代理监听地址，默认 `0.0.0.0` |
 | `WXCHAT_SECURE_COOKIE` | 经 HTTPS 访问后台时设为 `1` |
-| `WXCHAT_UPSTREAM` | 集成测试用上游，默认 `https://qyapi.weixin.qq.com` |
 
-安装版将 `WXCHAT_DATA` 固定为 `/var/lib/wxchat-message`，默认代理监听地址为 `0.0.0.0`。需要修改安装版管理端口或监听地址时，编辑 `/etc/wxchat-message.env` 后执行 `sudo systemctl restart wxchat-message`；代理端口和上传大小通过管理页面设置。
+修改管理端口或代理监听地址后，执行 `sudo systemctl restart wxchat-message` 生效。代理端口、启用状态和上传大小通过管理页面设置。
 
-## 验证
-
-测试使用临时账号、独立数据目录、临时端口和本地模拟上游，会实际启动 Nginx，不触碰现有代理：
-
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-覆盖首次设置、登录退出、访问控制、CSRF、端口切换与冲突、配置恢复、上传大小调整、multipart 报文转发、日志筛选清空和敏感数据脱敏。
-
-当前 14 项集成测试已在 macOS 和 Debian 12 x86_64 临时环境中通过。Linux 测试使用普通用户运行。与原版容器比较的 9 组无效凭证接口请求，HTTP 状态和企业微信错误码一致。
-
-安装脚本的完整测试使用本机 Docker 创建一次性 Debian + systemd 环境，实际执行依赖安装、端口冲突检查、首次设置、升级、失败回滚、备份、卸载和重装，并核对已有 Nginx 保持运行：
-
-```bash
-bash tests/installer/run.sh
-```
-
-该测试需要允许启动 privileged、private cgroup namespace 的本机测试容器。测试容器不映射宿主机端口、不挂载 Docker socket，结束后自动删除。本项目部署运行本身无需 Docker。
-
-模拟上游测试不能代替真实业务验收。正式迁移前仍需用现有客户端验证文字和图片的实际送达。
+## 使用说明
 
 上传限制针对整次 HTTP 请求，包含文件和表单内容；企业微信还会按对应接口规则校验素材。HTTP 200 也不等同于微信业务成功。
 
+接入客户端时，应验证文字、图片等实际消息的送达结果。
+
+## 参与开发
+
+开发环境、源码运行和测试方法见 [贡献指南](CONTRIBUTING.md)。问题反馈和功能建议可提交到 [Issues](https://github.com/weidaye1122/WxChat-Message/issues)。
+
 ## 来源与许可证
 
-本项目参考 [YanTaocheng/wxchat-Docker](https://github.com/YanTaocheng/wxchat-Docker)（上游为 [DDSRem-Dev/wxchat-Docker](https://github.com/DDSRem-Dev/wxchat-Docker)）的企业微信转发规则，保留 MIT 许可证和原版权声明。管理界面与本地进程管理为本项目新增实现，未复制 lifj25 改版的页面。
+本项目参考 [YanTaocheng/wxchat-Docker](https://github.com/YanTaocheng/wxchat-Docker)（上游为 [DDSRem-Dev/wxchat-Docker](https://github.com/DDSRem-Dev/wxchat-Docker)）的企业微信转发规则。Web 管理界面与代理进程管理由本项目实现。
 
-项目仓库：<https://github.com/weidaye1122/WxChat-Message>。
+项目采用 [MIT 许可证](LICENSE)，保留上游版权声明。
