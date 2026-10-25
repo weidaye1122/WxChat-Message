@@ -4,6 +4,7 @@ import argparse
 import datetime
 import http.client
 import importlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -38,8 +39,13 @@ def environment():
             values[key] = parsed[0] if parsed else ''
     else:
         values = {'WXCHAT_ADMIN_PORT': os.environ.get('WXCHAT_ADMIN_PORT', '7081'),
+                  'WXCHAT_ADMIN_HOST': os.environ.get('WXCHAT_ADMIN_HOST', '0.0.0.0'),
                   'WXCHAT_DATA': str(DATA), 'NGINX_BIN': os.environ.get('NGINX_BIN', '/usr/sbin/nginx'),
                   'WXCHAT_PROXY_HOST': os.environ.get('WXCHAT_PROXY_HOST', '0.0.0.0')}
+        peer = os.environ.get('SSH_CONNECTION', '').split()
+        allowed = os.environ.get('WXCHAT_SETUP_ALLOWED_IPS', peer[0] if peer else '')
+        if allowed:
+            values['WXCHAT_SETUP_ALLOWED_IPS'] = allowed
     if values.get('WXCHAT_DATA', str(DATA)) != str(DATA):
         raise ValueError(f'安装版数据目录必须为 {DATA}')
     return values
@@ -48,7 +54,8 @@ def environment():
 def settings():
     path = DATA / 'proxy/settings.json'
     return json.loads(path.read_text()) if path.exists() else {
-        'port': int(os.environ.get('WXCHAT_PROXY_PORT', '30888')), 'enabled': True, 'maxBodyMiB': 1}
+        'port': int(os.environ.get('WXCHAT_PROXY_PORT', '30888')), 'enabled': True, 'maxBodyMiB': 1,
+        'maxLogEntries': 200}
 
 
 def validate(binary):
@@ -60,6 +67,15 @@ def validate(binary):
     maximum = proxy.get('maxBodyMiB', 1)
     if not isinstance(proxy.get('enabled'), bool) or isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 100:
         raise ValueError('代理启用状态或上传大小设置无效')
+    retention = proxy.get('maxLogEntries', 200)
+    if isinstance(retention, bool) or not isinstance(retention, int) or not 1 <= retention <= 100000:
+        raise ValueError('日志保存条数须为 1–100000 整数')
+    admin_host = values.get('WXCHAT_ADMIN_HOST', '0.0.0.0')
+    if admin_host not in ('127.0.0.1', '0.0.0.0'):
+        raise ValueError('管理监听地址仅支持 127.0.0.1 或 0.0.0.0')
+    for address in values.get('WXCHAT_SETUP_ALLOWED_IPS', '').split(','):
+        if address.strip():
+            ipaddress.ip_address(address.strip())
     host = values.get('WXCHAT_PROXY_HOST', '127.0.0.1')
     if host not in ('127.0.0.1', '0.0.0.0'):
         raise ValueError('代理监听地址仅支持 127.0.0.1 或 0.0.0.0')
@@ -73,7 +89,7 @@ def validate(binary):
         path = Path('/sys/fs/cgroup') / group.lstrip('/') / 'cgroup.procs'
         if path.exists():
             allowed = set(map(int, path.read_text().split()))
-    for address, number in [('127.0.0.1', admin), (host, port)]:
+    for address, number in [(admin_host, admin), (host, port)]:
         try:
             with socket.socket() as sock:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -152,10 +168,13 @@ def verify():
             if not state['setupRequired'] and proxy['enabled']:
                 status, body = fetch(proxy['port'], '/__wxchat_health')
                 assert status == 200 and body.decode() == f"wxchat-message-ready:{proxy['port']}:{proxy['maxBodyMiB']}"
-            print(f'管理页面：http://127.0.0.1:{admin}')
-            print(f"代理地址：{values.get('WXCHAT_PROXY_HOST', '127.0.0.1')}:{proxy['port']}")
+            admin_host = values.get('WXCHAT_ADMIN_HOST', '0.0.0.0')
+            print(f'管理页面：http://服务器公网IP:{admin}' if admin_host == '0.0.0.0' else f'管理页面：http://127.0.0.1:{admin}')
+            proxy_host = values.get('WXCHAT_PROXY_HOST', '127.0.0.1')
+            print(f"代理地址：http://服务器公网IP:{proxy['port']}" if proxy_host == '0.0.0.0' else f"代理地址：http://127.0.0.1:{proxy['port']}")
+            print(f"放行 TCP 端口：{admin}（管理后台）、{proxy['port']}（微信代理）；仅放行需要公网访问的端口。")
             if state['setupRequired']:
-                print('首次设置管理员后代理才会启动；请通过 SSH 隧道访问管理页面。')
+                print('首次设置管理员后代理才会启动。首次设置允许本机及 WXCHAT_SETUP_ALLOWED_IPS 中的来源 IP；SSH 安装会自动登记当前来源 IP。')
             return
         except (OSError, ValueError, AssertionError) as error:
             last = error

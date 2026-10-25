@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 if [[ "${1:-}" == --help ]]; then
   echo '安装或升级 WxChat-Message（Debian 12+ / Ubuntu 22.04+，systemd）。'
-  echo '可选变量：WXCHAT_VERSION、WXCHAT_ADMIN_PORT、WXCHAT_PROXY_PORT、WXCHAT_PROXY_HOST。'
+  echo '可选变量：WXCHAT_VERSION、WXCHAT_ADMIN_HOST、WXCHAT_ADMIN_PORT、WXCHAT_SETUP_ALLOWED_IPS、WXCHAT_PROXY_PORT、WXCHAT_PROXY_HOST。'
   exit 0
 fi
 [[ $# -eq 0 ]] || { echo '不支持的参数，请使用 --help。' >&2; exit 1; }

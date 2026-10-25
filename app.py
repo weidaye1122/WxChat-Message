@@ -1,4 +1,4 @@
-"""Local administration for WxChat-Message's native Nginx proxy."""
+"""Administration for WxChat-Message's native Nginx proxy."""
 import argparse
 import atexit
 import collections
@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parent
 
 
 def create_app(data_directory=None, admin_port=7081, upstream=None):
+    setup_addresses = {ipaddress.ip_address(value.strip()) for value in
+                       os.environ.get("WXCHAT_SETUP_ALLOWED_IPS", "").split(",") if value.strip()}
     app = Flask(__name__, static_folder=str(ROOT / "static"), static_url_path="/static")
     data = Path(data_directory or os.environ.get("WXCHAT_DATA", ROOT / ".data")).resolve()
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -107,8 +109,9 @@ def create_app(data_directory=None, admin_port=7081, upstream=None):
         with auth_lock:
             if auth() is not None:
                 return jsonify(error="管理员已设置，请登录"), 409
-            if not ipaddress.ip_address(request.remote_addr).is_loopback:
-                return jsonify(error="首次设置请从本机访问管理页面"), 403
+            address = ipaddress.ip_address(request.remote_addr)
+            if not address.is_loopback and address not in setup_addresses:
+                return jsonify(error="首次设置请使用安装时的网络，或在服务器设置 WXCHAT_SETUP_ALLOWED_IPS 后重启服务"), 403
             payload = request.get_json()
             username, password = payload.get("username", ""), payload.get("password", "")
             if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
@@ -165,7 +168,8 @@ def create_app(data_directory=None, admin_port=7081, upstream=None):
         payload = request.get_json()
         try:
             manager.apply({"port": payload.get("port"), "enabled": payload.get("enabled"),
-                           "maxBodyMiB": payload.get("maxBodyMiB", manager.settings["maxBodyMiB"])})
+                           "maxBodyMiB": payload.get("maxBodyMiB", manager.settings["maxBodyMiB"]),
+                           "maxLogEntries": payload.get("maxLogEntries", manager.settings["maxLogEntries"])})
         except ProxyError as error:
             return jsonify(error=str(error)), 400
         return jsonify(ok=True, proxy=manager.status())
@@ -176,7 +180,13 @@ def create_app(data_directory=None, admin_port=7081, upstream=None):
         status = request.args.get("status", "all")
         if status not in ("all", "success", "error"):
             return jsonify(error="日志筛选条件无效"), 400
-        return jsonify(manager.logs(search=query, status=status))
+        try:
+            offset = int(request.args.get("offset", "0"))
+            if not 0 <= offset <= 100000:
+                raise ValueError
+        except ValueError:
+            return jsonify(error="日志页码无效"), 400
+        return jsonify(manager.logs(search=query, status=status, offset=offset))
 
     @app.delete("/api/logs")
     def clear_logs():
@@ -189,11 +199,14 @@ def create_app(data_directory=None, admin_port=7081, upstream=None):
 
 def main():
     parser = argparse.ArgumentParser(description="WxChat-Message 企业微信代理管理面板")
+    parser.add_argument("--host", choices=("127.0.0.1", "0.0.0.0"), default=os.environ.get("WXCHAT_ADMIN_HOST", "0.0.0.0"), help="管理页面监听地址，默认 0.0.0.0")
     parser.add_argument("--port", type=int, default=int(os.environ.get("WXCHAT_ADMIN_PORT", "7081")), help="管理页面端口，默认 7081")
     parser.add_argument("--data", default=os.environ.get("WXCHAT_DATA"), help="独立数据目录")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("端口范围为 1–65535")
+    if args.host not in ("127.0.0.1", "0.0.0.0"):
+        parser.error("管理监听地址仅支持 127.0.0.1 或 0.0.0.0")
     app = create_app(args.data, admin_port=args.port, upstream=os.environ.get("WXCHAT_UPSTREAM"))
     data = app.extensions["data_directory"]
     lockfile = open(data / "instance.lock", "a")
@@ -227,10 +240,10 @@ def main():
     signal.signal(signal.SIGINT, signal_shutdown)
     threading.Thread(target=maintenance, daemon=True).start()
     from waitress import serve
-    print("WxChat-Message 管理页面：http://127.0.0.1:%d" % args.port, flush=True)
+    print("WxChat-Message 管理监听：%s:%d" % (args.host, args.port), flush=True)
     print("首次访问时设置管理员账号和密码。", flush=True)
     try:
-        serve(app, host="127.0.0.1", port=args.port, threads=4, ident="WxChat-Message", max_request_body_size=16384)
+        serve(app, host=args.host, port=args.port, threads=4, ident="WxChat-Message", max_request_body_size=16384)
     finally:
         shutdown()
         lockfile.close()

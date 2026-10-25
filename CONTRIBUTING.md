@@ -20,12 +20,12 @@ cd WxChat-Message
 
 首次运行会创建 `.venv/` 并安装 Python 依赖。打开 <http://127.0.0.1:7081> 创建管理员账号。
 
-源码运行时，管理页面和代理默认均监听 `127.0.0.1`，代理默认端口为 `30888`。创建管理员后自动启动代理，端口及上传大小可在“代理设置”中修改。
+源码运行时，管理页面和代理默认均监听 `0.0.0.0`，代理默认端口为 `30888`。创建管理员后自动启动代理，端口、上传大小和日志保存条数可在“代理设置”中修改，日志默认保留 200 条。远程首次创建账号需设置 `WXCHAT_SETUP_ALLOWED_IPS`，本机访问可直接创建。
 
 使用其他管理端口或独立数据目录：
 
 ```bash
-./run.sh --port 7082 --data /tmp/wxchat-message-dev
+WXCHAT_PROXY_HOST=127.0.0.1 ./run.sh --host 127.0.0.1 --port 7082 --data /tmp/wxchat-message-dev
 ```
 
 停止管理程序时会同时停止它管理的 Nginx 实例，数据和设置会保留。程序使用自己的 Nginx 配置，无需另外启动系统 Nginx 服务。
@@ -49,8 +49,10 @@ cd WxChat-Message
 | --- | --- |
 | `NGINX_BIN` | 指定 Nginx 可执行文件 |
 | `WXCHAT_DATA` | 数据目录，可通过 `--data` 覆盖 |
+| `WXCHAT_ADMIN_HOST` | 管理监听地址，默认 `0.0.0.0`，可通过 `--host` 覆盖 |
+| `WXCHAT_SETUP_ALLOWED_IPS` | 首次设置允许的来源 IP，逗号分隔，本机始终允许 |
 | `WXCHAT_ADMIN_PORT` | 管理端口，默认 `7081`，可通过 `--port` 覆盖 |
-| `WXCHAT_PROXY_HOST` | 代理监听地址，源码运行默认 `127.0.0.1` |
+| `WXCHAT_PROXY_HOST` | 代理监听地址，默认 `0.0.0.0` |
 | `WXCHAT_SECURE_COOKIE` | 经 HTTPS 访问后台时设为 `1` |
 | `WXCHAT_UPSTREAM` | 测试上游地址，默认 `https://qyapi.weixin.qq.com` |
 
@@ -64,7 +66,7 @@ Linux 一键安装使用固定数据目录 `/var/lib/wxchat-message/`，代理�
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-覆盖首次设置、登录退出、访问控制、CSRF、端口切换与冲突、配置恢复、上传大小调整、multipart 报文转发、日志筛选清空和敏感数据脱敏。
+覆盖首次设置、登录退出、访问控制、CSRF、端口切换与冲突、配置恢复、上传大小调整、multipart 报文转发、日志分页、条数保留、并发转发中的日志清理、远程首次设置来源控制和敏感数据脱敏。
 
 安装流程测试会创建一次性 Debian + systemd 容器，实际执行依赖安装、端口冲突检查、首次设置、升级、失败回滚、备份、卸载和重装，并检查已有 Nginx 服务的状态：
 

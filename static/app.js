@@ -1,5 +1,5 @@
 const $ = selector => document.querySelector(selector);
-let csrf = '', setupRequired = false, page = 'overview', proxyAddress = '', refreshing = false;
+let csrf = '', setupRequired = false, page = 'overview', proxyAddress = '', refreshing = false, logOffset = 0;
 const escapeHTML = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 async function api(path, options = {}) {
   const response = await fetch(path, {...options, headers: {'Content-Type':'application/json', 'X-CSRF-Token':csrf, ...(options.headers || {})}});
@@ -71,26 +71,35 @@ async function refresh(notify = false) {
       const data = await api('/api/overview'); showProxy(data.proxy);
       $('#metric-requests').textContent = data.logs.stats.requests.toLocaleString(); $('#metric-errors').textContent = data.logs.stats.errors.toLocaleString();
       $('#metric-duration').innerHTML = escapeHTML(data.logs.stats.averageMs) + '<em>ms</em>';
+      $('#metric-retention').textContent = `当前保留 ${data.logs.stats.requests.toLocaleString()} 条，上限 ${data.logs.maxLogEntries.toLocaleString()} 条`;
       $('#recent-table').innerHTML = table(data.logs.items, false);
     } else if (page === 'logs') {
-      const data = await api(`/api/logs?search=${encodeURIComponent($('#log-search').value)}&status=${$('#log-status').value}`);
-      $('#logs-table').innerHTML = table(data.items, true); $('#log-count').textContent = `显示 ${data.items.length} 条 · 匹配 ${data.matched} 条`;
+      let data = await api(`/api/logs?search=${encodeURIComponent($('#log-search').value)}&status=${$('#log-status').value}&offset=${logOffset}`);
+      if (logOffset && logOffset >= data.matched) {
+        logOffset = 0;
+        data = await api(`/api/logs?search=${encodeURIComponent($('#log-search').value)}&status=${$('#log-status').value}&offset=0`);
+      }
+      $('#logs-table').innerHTML = table(data.items, true); $('#log-count').textContent = `保留 ${data.stats.requests} / ${data.maxLogEntries} 条 · 匹配 ${data.matched} 条`;
+      $('#log-page').textContent = `第 ${Math.floor(logOffset / data.pageSize) + 1} / ${Math.max(1, Math.ceil(data.matched / data.pageSize))} 页`;
+      $('#logs-prev').disabled = logOffset === 0; $('#logs-next').disabled = logOffset + data.pageSize >= data.matched;
     } else {
-      const data = await api('/api/settings'); $('#proxy-port').value = data.proxy.port; $('#proxy-enabled').checked = data.proxy.enabled; $('#upload-limit').value = data.proxy.maxBodyMiB; $('#admin-port').textContent = data.adminPort; $('#settings-upload-limit').textContent = `${data.proxy.maxBodyMiB} MiB`;
+      const data = await api('/api/settings'); $('#proxy-port').value = data.proxy.port; $('#proxy-enabled').checked = data.proxy.enabled; $('#upload-limit').value = data.proxy.maxBodyMiB; $('#log-limit').value = data.proxy.maxLogEntries; $('#admin-port').textContent = data.adminPort; $('#settings-upload-limit').textContent = `${data.proxy.maxBodyMiB} MiB`;
     }
     if (notify) toast('已刷新');
   } catch (error) { toast(error.message); } finally { refreshing = false; }
 }
 $('#copy-address').addEventListener('click', async () => { try { await navigator.clipboard.writeText(proxyAddress); toast('代理地址已复制'); } catch(error) { toast('请选中代理地址手动复制'); } });
 let searchTimer;
-$('#log-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => refresh(), 250); });
-$('#log-status').addEventListener('change', () => refresh());
+$('#log-search').addEventListener('input', () => { logOffset = 0; clearTimeout(searchTimer); searchTimer = setTimeout(() => refresh(), 250); });
+$('#log-status').addEventListener('change', () => { logOffset = 0; refresh(); });
+$('#logs-prev').addEventListener('click', () => { if (!refreshing) { logOffset = Math.max(0, logOffset - 200); refresh(); } });
+$('#logs-next').addEventListener('click', () => { if (!refreshing) { logOffset += 200; refresh(); } });
 $('#clear-logs').addEventListener('click', () => $('#clear-dialog').showModal());
 $('#cancel-clear').addEventListener('click', () => $('#clear-dialog').close());
-$('#confirm-clear').addEventListener('click', async () => { try { await api('/api/logs', {method:'DELETE'}); $('#clear-dialog').close(); await refresh(); toast('日志已清空'); } catch(error) { toast(error.message); } });
+$('#confirm-clear').addEventListener('click', async () => { try { await api('/api/logs', {method:'DELETE'}); logOffset = 0; $('#clear-dialog').close(); await refresh(); toast('日志已清空'); } catch(error) { toast(error.message); } });
 $('#settings-form').addEventListener('submit', async event => {
   event.preventDefault(); const button = $('#save-settings'); button.disabled = true; errorIn('#settings-error', '');
-  try { const data = await api('/api/settings', {method:'PUT', body:JSON.stringify({port:Number($('#proxy-port').value), enabled:$('#proxy-enabled').checked, maxBodyMiB:Number($('#upload-limit').value)})}); $('#settings-upload-limit').textContent = `${data.proxy.maxBodyMiB} MiB`; toast('代理设置已应用'); }
+  try { const data = await api('/api/settings', {method:'PUT', body:JSON.stringify({port:Number($('#proxy-port').value), enabled:$('#proxy-enabled').checked, maxBodyMiB:Number($('#upload-limit').value), maxLogEntries:Number($('#log-limit').value)})}); $('#settings-upload-limit').textContent = `${data.proxy.maxBodyMiB} MiB`; toast('代理设置已应用'); }
   catch(error) { errorIn('#settings-error', error.message); } finally { button.disabled = false; }
 });
 setInterval(() => { if (!document.hidden && page !== 'settings' && (page !== 'logs' || $('#auto-refresh').checked)) refresh(); }, 5000);

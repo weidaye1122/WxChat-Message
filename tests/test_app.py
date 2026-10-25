@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from app import create_app
 
@@ -236,6 +237,74 @@ class IntegrationTests(unittest.TestCase):
         response = self.call("/api/auth/setup", payload=["not", "an", "object"])
         self.assertEqual(response.status_code, 400)
         self.assertFalse(self.app.extensions["initialized"]())
+
+    def test_remote_setup_only_accepts_configured_installation_source(self):
+        with patch.dict('os.environ', {'WXCHAT_SETUP_ALLOWED_IPS': '203.0.113.10'}):
+            app = create_app(self.temp.name, admin_port=self.proxy.admin_port, upstream=self.upstream_url)
+        self.proxy = app.extensions['proxy']
+        self.proxy.settings['port'] = free_port()
+        client = app.test_client()
+        csrf = client.get('/api/auth/state').json['csrfToken']
+        payload = {'username': 'testadmin', 'password': self.password, 'confirmPassword': self.password}
+        headers = {'X-CSRF-Token': csrf, 'X-Forwarded-For': '203.0.113.10'}
+        denied = client.post('/api/auth/setup', json=payload, headers=headers, environ_overrides={'REMOTE_ADDR': '203.0.113.11'})
+        self.assertEqual(denied.status_code, 403)
+        allowed = client.post('/api/auth/setup', json=payload, headers=headers, environ_overrides={'REMOTE_ADDR': '203.0.113.10'})
+        self.assertEqual(allowed.status_code, 200, allowed.json)
+        self.assertTrue(allowed.json['proxy']['running'])
+        self.assertEqual(client.get('/api/settings').status_code, 200)
+
+    def test_log_retention_validation_persistence_and_pagination(self):
+        self.setup_admin()
+        settings = {'port': self.proxy.settings['port'], 'enabled': True, 'maxLogEntries': 450}
+        self.assertEqual(self.call('/api/settings', 'PUT', settings).status_code, 200)
+        for invalid in [0, -1, 100001, '200', True, 2.5, None]:
+            response = self.call('/api/settings', 'PUT', dict(settings, maxLogEntries=invalid))
+            self.assertEqual(response.status_code, 400, invalid)
+        self.assertEqual(json.loads(self.proxy.settings_path.read_text())['maxLogEntries'], 450)
+        for number in range(455):
+            self.proxy_request('/cgi-bin/retention-%d' % number)
+        result = self.client.get('/api/logs?offset=200').json
+        self.assertEqual(result['stats']['requests'], 450)
+        self.assertEqual(result['maxLogEntries'], 450)
+        self.assertEqual(len(result['items']), 200)
+        self.assertEqual(result['items'][0]['path'], '/cgi-bin/retention-254')
+        for offset in ['-1', 'bad', '100001']:
+            self.assertEqual(self.client.get('/api/logs?offset=' + offset).status_code, 400)
+        self.proxy.stop()
+        app = create_app(self.temp.name, admin_port=self.proxy.admin_port, upstream=self.upstream_url)
+        self.proxy = app.extensions['proxy']
+        self.assertEqual(self.proxy.settings['maxLogEntries'], 450)
+
+    def test_log_cleanup_while_nginx_keeps_forwarding(self):
+        self.setup_admin()
+        response = self.call('/api/settings', 'PUT', {'port': self.proxy.settings['port'], 'enabled': True, 'maxLogEntries': 20})
+        self.assertEqual(response.status_code, 200)
+        failures = []
+        def generate():
+            try:
+                for number in range(100):
+                    if self.proxy_request('/cgi-bin/concurrent-%d' % number)[0] != 200:
+                        failures.append(number)
+            except Exception as error:
+                failures.append(str(error))
+        writer = threading.Thread(target=generate)
+        writer.start()
+        while writer.is_alive():
+            self.proxy.rotate_logs()
+            time.sleep(0.02)
+        writer.join()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            self.proxy.rotate_logs()
+            if not self.proxy.pending_log_path.exists():
+                break
+            time.sleep(0.05)
+        self.assertEqual(failures, [])
+        actual = [json.loads(line)['path'] for path in self.proxy.request_log_paths() if path.exists() for line in path.read_text().splitlines()]
+        self.assertEqual(actual, ['/cgi-bin/concurrent-%d' % number for number in range(80, 100)])
+        self.assertEqual(self.proxy_request('/cgi-bin/after-cleanup')[0], 200)
+        self.assertEqual(self.client.get('/api/logs').json['items'][0]['path'], '/cgi-bin/after-cleanup')
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ APP = Path('/opt/wxchat-message')
 DATA = Path('/var/lib/wxchat-message')
 ENV = Path('/etc/wxchat-message.env')
 completed = []
+container_ip = socket.gethostbyname(socket.gethostname())
 
 
 def run(args, success=True, **kwargs):
@@ -36,8 +37,8 @@ def check(label):
     print('PASS: ' + label, flush=True)
 
 
-def request(port, path, method='GET', body=None, headers=None):
-    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+def request(port, path, method='GET', body=None, headers=None, host='127.0.0.1'):
+    connection = http.client.HTTPConnection(host, port, timeout=10)
     try:
         connection.request(method, path, body, headers or {})
         response = connection.getresponse()
@@ -91,7 +92,8 @@ threading.Thread(target=upstream.serve_forever, daemon=True).start()
 
 def bootstrap(**extra):
     env = dict(os.environ, WXCHAT_REPO_URL=f'http://127.0.0.1:{upstream.server_port}',
-               WXCHAT_ADMIN_PORT='17081', WXCHAT_PROXY_PORT='30889', **extra)
+               WXCHAT_ADMIN_PORT='17081', WXCHAT_PROXY_PORT='30889',
+               SSH_CONNECTION=f'{container_ip} 50000 {container_ip} 22', **extra)
     return run(['bash', '/dev/stdin'], input=(SOURCE / 'install.sh').read_text(), env=env, cwd='/tmp')
 
 
@@ -132,6 +134,9 @@ assert service_pid('nginx') == global_pid
 assert digest(Path('/etc/nginx/nginx.conf')) == global_config
 assert policy.is_symlink() and digest(policy_target) == policy_before
 assert json.loads(request(17081, '/api/auth/state')[2])['setupRequired']
+assert 'WXCHAT_ADMIN_HOST=0.0.0.0' in ENV.read_text()
+assert f'WXCHAT_SETUP_ALLOWED_IPS={container_ip}' in ENV.read_text()
+assert json.loads(request(17081, '/api/auth/state', host=container_ip)[2])['setupRequired']
 check('remote-style bootstrap installs with custom ports and preserves existing Nginx')
 
 with ENV.open('a') as handle:
@@ -146,7 +151,7 @@ def admin(path, method='GET', payload=None):
     global csrf
     headers = {'Content-Type': 'application/json', 'X-CSRF-Token': csrf,
                'Cookie': '; '.join(f'{key}={value.value}' for key, value in cookies.items())}
-    status, response_headers, body = request(17081, path, method, json.dumps(payload).encode() if payload is not None else None, headers)
+    status, response_headers, body = request(17081, path, method, json.dumps(payload).encode() if payload is not None else None, headers, host=container_ip)
     for key, value in response_headers:
         if key.lower() == 'set-cookie': cookies.load(value)
     result = json.loads(body)
@@ -158,11 +163,12 @@ def admin(path, method='GET', payload=None):
 admin('/api/auth/state')
 setup = admin('/api/auth/setup', 'POST', {'username': 'installer-admin', 'password': 'disposable-installer-fixture-12345', 'confirmPassword': 'disposable-installer-fixture-12345'})
 assert setup['proxy']['running'], setup
+assert setup['proxy']['maxLogEntries'] == 200
 pid = service_pid('wxchat-message')
 assert Path(f'/proc/{pid}/status').read_text().split('Uid:', 1)[1].split()[0] != '0'
 assert DATA.stat().st_mode & 0o777 == 0o700 and (DATA / 'auth.json').stat().st_mode & 0o777 == 0o600
 assert json.loads(request(30889, '/cgi-bin/gettoken?x=a%2Fb')[2])['path'] == '/cgi-bin/gettoken?x=a%2Fb'
-admin('/api/settings', 'PUT', {'port': 30890, 'enabled': True, 'maxBodyMiB': 2})
+admin('/api/settings', 'PUT', {'port': 30890, 'enabled': True, 'maxBodyMiB': 2, 'maxLogEntries': 300})
 body = b'--fixture\r\nContent-Disposition: form-data; name="media"; filename="image.jpg"\r\n\r\n' + b'x' * 1048577 + b'\r\n--fixture--\r\n'
 status, _, response = request(30890, '/cgi-bin/media/upload?access_token=fixture-only&type=image', 'POST', body, {'Content-Type': 'multipart/form-data; boundary=fixture'})
 assert status == 200 and json.loads(response)['sha256'] == hashlib.sha256(body).hexdigest()
@@ -202,7 +208,7 @@ check('failed service upgrade restores the prior release, unit and running proxy
 
 suite = run(['runuser', '-u', 'wxchat-message', '--', str(APP / 'current/.venv/bin/python'), '-m', 'unittest', 'discover', '-s', '/src/tests', '-v'], cwd='/src')
 assert 'OK' in suite.stderr and 'skipped' not in suite.stderr
-check('all 14 application integration tests pass on Linux')
+check('application and log retention tests pass on Linux')
 
 run(['bash', str(APP / 'current/scripts/uninstall.sh')])
 assert not APP.exists() and not Path('/etc/systemd/system/wxchat-message.service').exists()

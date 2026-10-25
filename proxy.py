@@ -44,7 +44,7 @@ class ProxyManager:
         if parsed.scheme not in ("http", "https") or not parsed.hostname or "@" in parsed.netloc or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
             raise ValueError("上游地址必须是 HTTP(S) 服务地址")
         self.upstream = self.upstream.rstrip("/")
-        self.host = os.environ.get("WXCHAT_PROXY_HOST", "127.0.0.1")
+        self.host = os.environ.get("WXCHAT_PROXY_HOST", "0.0.0.0")
         if self.host not in ("127.0.0.1", "0.0.0.0"):
             raise ValueError("代理监听地址仅支持 127.0.0.1 或 0.0.0.0")
         self.binary = binary or os.environ.get("NGINX_BIN") or shutil.which("nginx")
@@ -54,10 +54,11 @@ class ProxyManager:
         self.config_path = self.directory / "nginx.conf"
         self.pid_path = self.directory / "nginx.pid"
         self.log_path = self.directory / "requests.jsonl"
+        self.pending_log_path = self.directory / "requests.jsonl.pending"
         self.error_path = self.directory / "nginx-error.log"
         self.settings_path = self.directory / "settings.json"
         self.error = None
-        self.settings = {"port": 30888, "enabled": True, "maxBodyMiB": 1}
+        self.settings = {"port": 30888, "enabled": True, "maxBodyMiB": 1, "maxLogEntries": 200}
         if self.settings_path.exists():
             self.settings.update(json.loads(self.settings_path.read_text()))
         for name in ("body", "proxy", "fastcgi", "uwsgi", "scgi"):
@@ -135,7 +136,8 @@ class ProxyManager:
     def apply(self, settings):
         with self.lock:
             settings = {"port": settings.get("port"), "enabled": settings.get("enabled"),
-                        "maxBodyMiB": settings.get("maxBodyMiB", self.settings["maxBodyMiB"])}
+                        "maxBodyMiB": settings.get("maxBodyMiB", self.settings["maxBodyMiB"]),
+                        "maxLogEntries": settings.get("maxLogEntries", self.settings["maxLogEntries"])}
             port = settings.get("port")
             if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
                 raise ProxyError("端口必须是 1–65535 之间的整数")
@@ -146,6 +148,9 @@ class ProxyManager:
             maximum = settings["maxBodyMiB"]
             if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 100:
                 raise ProxyError("上传大小上限必须是 1–100 MiB 之间的整数")
+            retention = settings["maxLogEntries"]
+            if isinstance(retention, bool) or not isinstance(retention, int) or not 1 <= retention <= 100000:
+                raise ProxyError("日志保存条数必须是 1–100000 之间的整数")
             current = dict(self.settings)
             previous = self.config_path.read_text() if self.config_path.exists() else None
             pid = self.owned_pid()
@@ -209,11 +214,87 @@ class ProxyManager:
                 "nginxAvailable": bool(self.binary), "error": self.error,
                 "port": self.settings["port"], "enabled": self.settings["enabled"],
                 "maxBodyMiB": self.settings["maxBodyMiB"],
+                "maxLogEntries": self.settings["maxLogEntries"],
                 "listenHost": self.host, "upstream": self.upstream}
+
+    def request_log_paths(self):
+        return [Path(str(self.log_path) + ".%d" % n) for n in (3, 2, 1)] + [self.pending_log_path, self.log_path]
+
+    def log_is_open(self, path):
+        """Never rewrite a file that Nginx may still be appending to after USR1."""
+        pid = self.owned_pid()
+        if not pid:
+            return False
+        try:
+            identity = path.stat()
+            if Path("/proc/self/fd").is_dir():
+                # Inspect this instance only; unrelated services may deny /proc access.
+                processes = [pid]
+                for process_id in processes:
+                    try:
+                        process = Path("/proc") / str(process_id)
+                        children = process / "task" / str(process_id) / "children"
+                        processes.extend(int(child) for child in children.read_text().split())
+                        for descriptor in (process / "fd").iterdir():
+                            try:
+                                opened = descriptor.stat()
+                                if (opened.st_dev, opened.st_ino) == (identity.st_dev, identity.st_ino):
+                                    return True
+                            except FileNotFoundError:
+                                pass
+                    except (FileNotFoundError, ProcessLookupError):
+                        pass
+                return False
+            result = subprocess.run(["lsof", "-t", str(path)], capture_output=True, timeout=3)
+            return result.returncode != 1 or bool(result.stderr)
+        except (OSError, subprocess.SubprocessError):
+            # Keep the closed-file candidate until a later maintenance pass can verify it.
+            return True
+
+    def trim_request_logs(self):
+        maximum = self.settings["maxLogEntries"]
+        active = self.tail(self.log_path, maximum + 1)
+        oversized = self.log_path.exists() and self.log_path.stat().st_size >= 5 * 1024 * 1024
+        if (len(active) > maximum or oversized) and not self.pending_log_path.exists():
+            os.replace(self.log_path, self.pending_log_path)
+            self.log_path.touch(mode=0o600)
+            pid = self.owned_pid()
+            if pid:
+                os.kill(pid, signal.SIGUSR1)
+            active = self.tail(self.log_path, maximum + 1)
+        archives = [path for path in self.request_log_paths()[:-1] if path.exists()]
+        if not archives or any(self.log_is_open(path) for path in archives):
+            return
+        budget = max(0, maximum - len(active))
+        retained = collections.deque(maxlen=budget)
+        count = 0
+        for path in archives:
+            lines = self.tail(path, maximum + 1)
+            count += len(lines)
+            retained.extend(lines)
+        retained_bytes = sum(len(line) + 1 for line in retained)
+        while retained_bytes > 15 * 1024 * 1024:
+            retained_bytes -= len(retained.popleft()) + 1
+        archive = Path(str(self.log_path) + ".1")
+        if archives == [archive] and count == len(retained):
+            return
+        # Only closed archives are replaced. New requests keep appending to the active file.
+        if retained:
+            temporary = archive.with_suffix(archive.suffix + ".tmp")
+            with open(temporary, "wb") as handle:
+                os.chmod(temporary, 0o600)
+                handle.write(b"\n".join(retained) + b"\n")
+            os.replace(temporary, archive)
+        else:
+            archive.unlink(missing_ok=True)
+        for path in archives:
+            if path != archive:
+                path.unlink(missing_ok=True)
 
     def rotate_logs(self):
         with self.lock:
-            for path in (self.log_path, self.error_path):
+            self.trim_request_logs()
+            for path in (self.error_path,):
                 if path.exists() and path.stat().st_size >= 5 * 1024 * 1024:
                     for number in (3, 2, 1):
                         source = path if number == 1 else Path(str(path) + ".%d" % (number - 1))
@@ -225,7 +306,7 @@ class ProxyManager:
 
     @staticmethod
     def tail(path, limit):
-        if not path.exists():
+        if limit <= 0 or not path.exists():
             return []
         chunks = []
         with open(path, "rb") as handle:
@@ -240,11 +321,12 @@ class ProxyManager:
                 count += block.count(b"\n")
         return b"".join(chunks).splitlines()[-limit:]
 
-    def logs(self, search="", status="all", limit=200):
+    def logs(self, search="", status="all", limit=200, offset=0):
         with self.lock:
-            records = collections.deque(maxlen=2000)
-            for path in [Path(str(self.log_path) + ".%d" % n) for n in (3, 2, 1)] + [self.log_path]:
-                for raw in self.tail(path, 2000):
+            maximum = self.settings["maxLogEntries"]
+            records = collections.deque(maxlen=maximum)
+            for path in self.request_log_paths():
+                for raw in self.tail(path, maximum):
                     try:
                         record = json.loads(raw)
                         # Only allow known fields to leave the server.
@@ -259,10 +341,13 @@ class ProxyManager:
                      "averageMs": round(sum(r["durationMs"] for r in items) / len(items), 1) if items else 0}
             filtered = [r for r in reversed(items) if (not search or search.lower() in (r["path"] + " " + r["method"]).lower()) and
                         (status == "all" or (status == "error" and r["status"] >= 400) or (status == "success" and r["status"] < 400))]
-            return {"items": filtered[:limit], "matched": len(filtered), "stats": stats}
+            return {"items": filtered[offset:offset + limit], "matched": len(filtered), "stats": stats,
+                    "maxLogEntries": maximum, "offset": offset, "pageSize": limit}
 
     def clear_logs(self):
         with self.lock:
             self.log_path.write_text("")
+            if self.pending_log_path.exists():
+                self.pending_log_path.write_text("")
             for n in (1, 2, 3):
                 Path(str(self.log_path) + ".%d" % n).unlink(missing_ok=True)
