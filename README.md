@@ -4,7 +4,9 @@ WxChat-Message 是一个无需 Docker 的企业微信消息代理工具，提供
 
 Nginx 负责转发企业微信 API 请求，Python 提供管理后台。支持通过一键脚本安装为 Linux 系统服务。
 
-当前版本：`0.1.0` · [MIT License](LICENSE)
+主要供自用和小范围朋友使用。日常按“修改 → 必要检查 → 保存到 GitHub”维护，需要给使用者更新时再发布版本。开发、目录约定和检查方法见 [开发指南](CONTRIBUTING.md)。
+
+界面版本：`0.1.0` · [MIT License](LICENSE)。安装脚本默认取 `main`，不代表该内容已经发布为正式版本。
 
 ## 功能
 
@@ -72,11 +74,13 @@ ssh -N -L 7081:127.0.0.1:7081 root@服务器IP
 
 此时打开本机 <http://127.0.0.1:7081>；客户端代理仍填写服务器公网 IP。管理端口可在安全组中仅允许自己的来源 IP；需要加密访问时，可使用 HTTPS 反向代理。
 
-### 升级、备份和卸载
+### 升级
 
 再次执行同一条安装命令即可升级。安装器会先创建新的程序目录和 Python 环境，通过校验后再切换版本；服务启动检查失败时恢复之前的版本。账号、会话密钥、代理端口、上传限制和日志位于独立数据目录，不随程序文件替换。
 
 `WXCHAT_VERSION` 可选择已有分支、标签或完整提交 SHA，默认 `main`。安装入口与所选源码版本需包含安装脚本。
+
+保存代码到 GitHub 不会自动更新已安装的服务；不过，使用者再次执行默认安装命令时会取得 `main` 的最新内容。需要固定版本时，先查到确实存在的标签或完整提交 SHA，再将 `WXCHAT_VERSION` 设置为该值执行安装。升级成功后保留当前及上一个程序目录，启动检查失败时自动切回原程序和服务配置；这不等同于恢复历史数据备份。
 
 查看服务状态和运行日志：
 
@@ -85,13 +89,49 @@ sudo systemctl status wxchat-message
 sudo journalctl -u wxchat-message -n 100 --no-pager
 ```
 
+### 备份与恢复
+
 备份管理员、会话密钥、代理设置、环境文件和 systemd 配置：
 
 ```bash
 sudo /opt/wxchat-message/current/scripts/backup.sh
 ```
 
-备份保存在 `/var/backups/wxchat-message/`。该备份不包含请求日志和临时上传文件。
+备份保存在 `/var/backups/wxchat-message/`，每次生成独立目录，不自动过期。安装、升级和卸载也会先备份。备份只复制当时存在的文件，包含：
+
+```text
+data/auth.json         管理员账号和密码哈希
+data/session-key       会话签名密钥
+data/proxy/settings.json  代理端口、启用状态、上传上限、日志条数
+wxchat-message.env     运行环境
+wxchat-message.service  服务配置（当时存在才会复制）
+backup.json            原程序位置和数据目录说明
+```
+
+备份不包含程序、Python 环境、请求日志和临时上传文件。首次安装前的备份可能没有账号和设置文件，不能当作完整恢复点。备份含账号与密钥，只应私下保存；清理前保留一份确认可用的备份和重要升级前的备份，不按日期自动删除。
+
+现有脚本没有一键恢复命令。Linux 默认安装路径下可手动恢复，建议先在独立测试环境演练：
+
+1. 选定备份，核对上述账号、密钥、代理设置和环境文件均存在，查看 `backup.json` 确认来源。程序和依赖需另行保留可取得的标签或提交 SHA；新机器或程序损坏时，先安装对应版本，确保服务账号和目录已建立。
+2. 停止服务，再用现有备份脚本保存恢复前的状态。备份期间不要同时安装、升级或修改设置。
+3. 将下面的路径替换为选定的备份目录，恢复账号、密钥、代理设置和环境文件。若任一步失败，先排查，不继续启动。
+
+```bash
+wxchat_backup='/var/backups/wxchat-message/替换为实际备份目录'
+sudo systemctl stop wxchat-message &&
+sudo /opt/wxchat-message/current/scripts/backup.sh &&
+sudo install -o wxchat-message -g wxchat-message -m 600 "$wxchat_backup/data/auth.json" "$wxchat_backup/data/session-key" /var/lib/wxchat-message/ &&
+sudo install -o wxchat-message -g wxchat-message -m 600 "$wxchat_backup/data/proxy/settings.json" /var/lib/wxchat-message/proxy/settings.json &&
+sudo install -o root -g root -m 600 "$wxchat_backup/wxchat-message.env" /etc/wxchat-message.env &&
+sudo systemctl start wxchat-message
+sudo systemctl status wxchat-message --no-pager
+```
+
+通常使用当前安装生成的 systemd 服务文件。只有确实需要恢复原来的自定义服务配置、且确认其中的程序路径有效时，才恢复备份的 `wxchat-message.service`，并在启动前执行 `sudo systemctl daemon-reload`。换机器时还要核对环境文件中的监听地址、端口、Nginx 路径和首次设置来源 IP。
+
+恢复后检查管理员登录、代理端口、上传限制、日志条数与代理状态。请求日志不会由配置备份恢复；真实企业微信消息的送达仍需单独确认。上述手动恢复步骤已按现有备份格式核对，本次整理未实测恢复，验证边界见 [开发指南](CONTRIBUTING.md#更新记录与验证状态)。
+
+### 卸载
 
 卸载程序并保留账号、环境文件及运行数据：
 
@@ -124,10 +164,12 @@ sudo bash ./install.sh
 ```text
 auth.json              管理员账号和密码哈希
 session-key            会话签名密钥
-proxy/settings.json    端口、启用状态与上传上限
+proxy/settings.json    端口、启用状态、上传上限与日志条数
 proxy/nginx.conf       此实例的 Nginx 配置
 proxy/requests.jsonl   代理请求日志
 ```
+
+源码运行的数据默认位于仓库的 `.data/`，也可用 `--data` 指定其他目录；与 Linux 安装版的数据分开。数据、日志、真实环境文件和备份都不进入 Git。
 
 服务配置位于 `/etc/wxchat-message.env`：
 
@@ -141,6 +183,18 @@ proxy/requests.jsonl   代理请求日志
 
 修改管理监听地址、管理端口或代理监听地址后，执行 `sudo systemctl restart wxchat-message` 生效。代理端口、启用状态、上传大小和最多保存日志条数通过管理页面设置。旧配置没有日志条数时默认使用 200 条。旧版环境文件未指定 `WXCHAT_ADMIN_HOST` 时，升级后管理页面默认监听 `0.0.0.0`；需要仅本机管理请显式设为 `127.0.0.1`。
 
+### 保留与清理
+
+| 内容 | 现有规则 |
+| --- | --- |
+| 安装版程序目录 | 升级成功后仅保留当前及上一个版本；失败时清理本次新版本并尝试恢复旧服务 |
+| 配置备份 | 每次新增目录，无自动数量或天数限制；人工核对后再处理旧备份 |
+| 请求日志 | 默认保留最近 200 条，可设 1–100000 条；活动文件达到 5 MiB 时轮转，归档合计最多 15 MiB |
+| Nginx 错误日志 | 活动文件达到 5 MiB 时轮转，最多保留 3 份归档 |
+| systemd 运行日志 | 由系统 journald 管理，不受后台请求日志条数设置控制 |
+
+程序约每 10 秒维护一次日志；正在写入的归档会延后处理，因此条数和大小可短暂超限。日常查看或清空请求日志使用后台已有功能，不再增加轮转脚本或定时删除任务。
+
 ## 使用说明
 
 上传限制针对整次 HTTP 请求，包含文件和表单内容；企业微信还会按对应接口规则校验素材。HTTP 200 也不等同于微信业务成功。
@@ -149,7 +203,7 @@ proxy/requests.jsonl   代理请求日志
 
 ## 参与开发
 
-开发环境、源码运行和测试方法见 [贡献指南](CONTRIBUTING.md)。问题反馈和功能建议可提交到 [Issues](https://github.com/weidaye1122/WxChat-Message/issues)。
+开发环境、源码运行、日常提交和测试方法见 [开发指南](CONTRIBUTING.md)。问题反馈和功能建议可提交到 [Issues](https://github.com/weidaye1122/WxChat-Message/issues)。
 
 ## 来源与许可证
 

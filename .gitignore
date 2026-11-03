@@ -4,3 +4,31 @@ __pycache__/
 *.pyc
 .DS_Store
 test-artifacts/
+
+# 本地资料放在仓库旁；防止误放入仓库时提交。
+/本地资料/
+
+# 真实环境配置；配置示例仍可提交。
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+
+# 运行数据、密钥、日志和人工备份，不进入 Git。
+/data/
+/logs/
+/backups/
+/backup/
+auth.json
+session-key
+requests.jsonl*
+nginx.pid
+*.log
+*.log.*
+*.key
+*.pem
+*.bak
+*.tar.gz
+*.tgz
+*.zip
