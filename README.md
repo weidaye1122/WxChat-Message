@@ -6,7 +6,7 @@ Nginx 负责转发企业微信 API 请求，Python 提供管理后台。支持�
 
 主要供自用和小范围朋友使用。日常按“修改 → 必要检查 → 保存到 GitHub”维护，需要给使用者更新时再发布版本。开发、目录约定和检查方法见 [开发指南](CONTRIBUTING.md)。
 
-界面版本：`0.1.0` · [MIT License](LICENSE)。一键安装默认使用最新正式 Release 对应的源码。
+当前正式版本：[v0.1.0](https://github.com/weidaye1122/WxChat-Message/releases/tag/v0.1.0) · [MIT License](LICENSE)。一键安装默认使用最新正式 Release 对应的源码。
 
 ## 功能
 
