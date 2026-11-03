@@ -6,7 +6,7 @@ Nginx 负责转发企业微信 API 请求，Python 提供管理后台。支持�
 
 主要供自用和小范围朋友使用。日常按“修改 → 必要检查 → 保存到 GitHub”维护，需要给使用者更新时再发布版本。开发、目录约定和检查方法见 [开发指南](CONTRIBUTING.md)。
 
-界面版本：`0.1.0` · [MIT License](LICENSE)。安装脚本默认取 `main`，不代表该内容已经发布为正式版本。
+界面版本：`0.1.0` · [MIT License](LICENSE)。一键安装默认使用最新正式 Release 对应的源码。
 
 ## 功能
 
@@ -35,6 +35,8 @@ bash <(wget -qO- https://raw.githubusercontent.com/weidaye1122/WxChat-Message/ma
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/weidaye1122/WxChat-Message/main/install.sh)
 ```
+
+以上地址保留为安装入口，程序源码按 GitHub 最新正式 Release 的标签下载。草稿、预发布和仅推送的开发代码不属于默认安装目标。没有正式 Release 或获取失败时，安装器会报错停止，不会改装 `main`，也不会进入系统依赖安装或服务切换。
 
 脚本会安装系统 Python、venv、CA 证书和 Nginx，将锁定版本的 Python 依赖放入项目独立环境，并创建 `wxchat-message` 专用账号和 systemd 服务。程序和它启动的 Nginx 均使用该普通账号运行。Nginx 使用本项目的数据目录，不改写已有的 `/etc/nginx/nginx.conf`。
 
@@ -78,9 +80,11 @@ ssh -N -L 7081:127.0.0.1:7081 root@服务器IP
 
 再次执行同一条安装命令即可升级。安装器会先创建新的程序目录和 Python 环境，通过校验后再切换版本；服务启动检查失败时恢复之前的版本。账号、会话密钥、代理端口、上传限制和日志位于独立数据目录，不随程序文件替换。
 
-`WXCHAT_VERSION` 可选择已有分支、标签或完整提交 SHA，默认 `main`。安装入口与所选源码版本需包含安装脚本。
+未设置 `WXCHAT_VERSION` 或设为空时，默认选择最新正式 Release。需要固定版本时，将它设为确实存在的标签或完整提交 SHA。开发排查仍可显式指定已有分支，例如 `WXCHAT_VERSION=main`；这些显式选择保留原有行为，所选源码需包含安装脚本。
 
-保存代码到 GitHub 不会自动更新已安装的服务；不过，使用者再次执行默认安装命令时会取得 `main` 的最新内容。需要固定版本时，先查到确实存在的标签或完整提交 SHA，再将 `WXCHAT_VERSION` 设置为该值执行安装。升级成功后保留当前及上一个程序目录，启动检查失败时自动切回原程序和服务配置；这不等同于恢复历史数据备份。
+日常保存代码到 GitHub 不会改变默认安装版本。准备给使用者更新时，再从已检查的代码发布正式 Release；只有标签、草稿或预发布都不会成为默认安装目标。使用者需要更新时，重新执行同一安装命令即可取得最新正式版本，已安装服务不会自行升级。
+
+升级成功后保留当前及上一个程序目录，启动检查失败时自动切回原程序和服务配置；这不等同于恢复历史数据备份。查找或下载版本失败时，现有程序、服务和数据保持原样。
 
 查看服务状态和运行日志：
 
@@ -142,6 +146,8 @@ sudo /opt/wxchat-message/current/scripts/uninstall.sh
 卸载只移除本项目的程序和 systemd 服务，系统 Python、Nginx、专用账号和备份保留；已有的其他 Nginx 服务继续运行。重新安装时会复用保留的账号和设置。
 
 ### 从源码安装
+
+这是开发或排查时的显式源码入口，安装当前检出的文件，不会联网替你选择正式 Release。需要固定源码时先检出相应标签或提交；日常使用者采用上面的一键安装命令。
 
 ```bash
 git clone https://github.com/weidaye1122/WxChat-Message.git

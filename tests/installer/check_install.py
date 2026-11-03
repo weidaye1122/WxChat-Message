@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import tarfile
+import tempfile
 import threading
 import time
 
@@ -60,11 +61,50 @@ with tarfile.open(fileobj=archive_bytes, mode='w:gz') as archive:
     for item in SOURCE.iterdir():
         archive.add(item, arcname='WxChat-Message-main/' + item.name)
 
+probe_bytes = io.BytesIO()
+with tarfile.open(fileobj=probe_bytes, mode='w:gz') as archive:
+    for name, content in {
+        'app.py': b'', 'scripts/common.sh': b'',
+        'scripts/install.sh': b'printf "%s\\n" "$WXCHAT_VERSION" > "$WXCHAT_TEST_MARKER"\n',
+    }.items():
+        entry = tarfile.TarInfo('WxChat-Message-probe/' + name)
+        entry.size = len(content)
+        archive.addfile(entry, io.BytesIO(content))
+
 
 class Upstream(http.server.BaseHTTPRequestHandler):
+    stable_tag = 'v0.1.0-fixture'
+    latest_status = 302
+    redirect_style = 'absolute'
+    archive_missing = False
+    paths = []
+
     def do_GET(self):
-        if self.path == '/archive/main.tar.gz':
-            body = archive_bytes.getvalue()
+        type(self).paths.append(self.path)
+        prefix = '/probe' if self.path.startswith('/probe/') else ''
+        path = self.path[len(prefix):]
+        if path == '/releases/latest':
+            self.send_response(self.latest_status)
+            if self.latest_status == 302:
+                target = prefix + '/releases/tag/' + self.stable_tag
+                if self.redirect_style == 'absolute':
+                    target = f'http://127.0.0.1:{self.server.server_port}' + target
+                elif self.redirect_style == 'relative-path':
+                    target = 'tag/' + self.stable_tag
+                elif self.redirect_style == 'foreign':
+                    target = '/unrelated/releases/tag/' + self.stable_tag
+                elif self.redirect_style == 'invalid':
+                    target = prefix + '/releases/tag/bad%20tag'
+                self.send_header('Location', target)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        if path.startswith('/archive/'):
+            ref = path.removeprefix('/archive/').removesuffix('.tar.gz')
+            if self.archive_missing or ref not in {'refs/tags/' + self.stable_tag, 'v0.0.9', 'main', 'codex/check', 'f' * 40}:
+                self.send_error(404)
+                return
+            body = (probe_bytes if prefix else archive_bytes).getvalue()
         else:
             body = json.dumps({'path': self.path, 'method': 'GET'}).encode()
         self.send_response(200)
@@ -90,11 +130,75 @@ upstream.daemon_threads = True
 threading.Thread(target=upstream.serve_forever, daemon=True).start()
 
 
-def bootstrap(**extra):
+def bootstrap(success=True, **extra):
     env = dict(os.environ, WXCHAT_REPO_URL=f'http://127.0.0.1:{upstream.server_port}',
                WXCHAT_ADMIN_PORT='17081', WXCHAT_PROXY_PORT='30889',
                SSH_CONNECTION=f'{container_ip} 50000 {container_ip} 22', **extra)
-    return run(['bash', '/dev/stdin'], input=(SOURCE / 'install.sh').read_text(), env=env, cwd='/tmp')
+    if 'WXCHAT_VERSION' not in extra:
+        env.pop('WXCHAT_VERSION', None)
+    return run(['bash', '/dev/stdin'], success=success, input=(SOURCE / 'install.sh').read_text(), env=env, cwd='/tmp')
+
+
+# Exercise both download tools without Python/jq in PATH and without running the real installer.
+with tempfile.TemporaryDirectory(prefix='wxchat-bootstrap-probe-') as temporary:
+    root = Path(temporary)
+    scratch = root / 'downloads'
+    scratch.mkdir()
+    marker = root / 'installed-version'
+    for downloader in ['wget', 'curl']:
+        binary_dir = root / downloader
+        binary_dir.mkdir()
+        for command in ['bash', 'dirname', 'mktemp', 'rm', 'mkdir', 'tar', 'gzip', 'awk', downloader]:
+            (binary_dir / command).symlink_to(shutil.which(command))
+
+        def probe(version=None, success=True):
+            marker.unlink(missing_ok=True)
+            Upstream.paths.clear()
+            env = dict(os.environ, PATH=str(binary_dir), TMPDIR=str(scratch),
+                       WXCHAT_REPO_URL=f'http://127.0.0.1:{upstream.server_port}/probe',
+                       WXCHAT_TEST_MARKER=str(marker))
+            env.pop('WXCHAT_VERSION', None)
+            if version is not None:
+                env['WXCHAT_VERSION'] = version
+            result = run(['/bin/bash', '/dev/stdin'], success=success,
+                         input=(SOURCE / 'install.sh').read_text(), env=env, cwd='/tmp')
+            assert not list(scratch.iterdir()), ('bootstrap temporary files leaked', downloader)
+            if not success:
+                assert not marker.exists(), 'failed lookup must not execute the installer'
+            return result
+
+        for style in ['absolute', 'relative-root', 'relative-path']:
+            Upstream.redirect_style = style
+            probe()
+            assert marker.read_text().strip() == Upstream.stable_tag
+            assert '/probe/archive/refs/tags/' + Upstream.stable_tag + '.tar.gz' in Upstream.paths
+            assert '/probe/archive/main.tar.gz' not in Upstream.paths
+        Upstream.redirect_style = 'absolute'
+        probe(version='')
+        assert marker.read_text().strip() == Upstream.stable_tag
+
+        for ref in ['v0.0.9', 'main', 'codex/check', 'f' * 40]:
+            probe(version=ref)
+            assert marker.read_text().strip() == ref
+            assert Upstream.paths == ['/probe/archive/' + ref + '.tar.gz']
+
+        Upstream.latest_status = 404
+        failed = probe(success=False)
+        assert '正式 Release' in failed.stderr and 'main' in failed.stderr
+        assert all('/archive/' not in path for path in Upstream.paths)
+        Upstream.latest_status = 302
+        for style in ['foreign', 'invalid']:
+            Upstream.redirect_style = style
+            probe(success=False)
+            assert all('/archive/' not in path for path in Upstream.paths)
+        Upstream.redirect_style = 'absolute'
+        Upstream.archive_missing = True
+        probe(success=False)
+        Upstream.archive_missing = False
+        probe(version='../main', success=False)
+        assert not Upstream.paths
+        check(downloader + ' bootstrap selects the stable release, preserves explicit refs and stops safely on failures')
+assert not APP.exists()
 
 
 policy = Path('/usr/sbin/policy-rc.d')
@@ -130,6 +234,7 @@ run(['systemctl', 'enable', '--now', 'nginx'])
 global_pid = service_pid('nginx')
 global_config = digest(Path('/etc/nginx/nginx.conf'))
 bootstrap()
+assert (APP / 'current/INSTALL_SOURCE').read_text().strip() == Upstream.stable_tag
 assert service_pid('nginx') == global_pid
 assert digest(Path('/etc/nginx/nginx.conf')) == global_config
 assert policy.is_symlink() and digest(policy_target) == policy_before
@@ -177,8 +282,20 @@ check('non-root systemd service supports setup, port changes, multipart uploads 
 
 before = {str(path): digest(path) for path in [DATA / 'auth.json', DATA / 'session-key', DATA / 'proxy/settings.json', ENV]}
 old_release = (APP / 'current').resolve()
-bootstrap(WXCHAT_VERSION='main')
+Upstream.latest_status = 404
+running_pid = service_pid('wxchat-message')
+bootstrap(success=False)
+assert (APP / 'current').resolve() == old_release and service_pid('wxchat-message') == running_pid
+assert all(digest(Path(path)) == value for path, value in before.items())
+assert admin('/api/auth/state')['authenticated']
+assert service_pid('nginx') == global_pid
+Upstream.latest_status = 302
+check('missing release leaves the existing program, running services, session and settings untouched')
+
+Upstream.stable_tag = 'v0.1.1-fixture'
+bootstrap()
 assert (APP / 'current').resolve() != old_release
+assert (APP / 'current/INSTALL_SOURCE').read_text().strip() == Upstream.stable_tag
 assert all(digest(Path(path)) == value for path, value in before.items())
 assert admin('/api/auth/state')['authenticated']
 assert json.loads(request(30890, '/cgi-bin/gettoken')[2])['method'] == 'GET'
